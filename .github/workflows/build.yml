@@ -13,6 +13,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Maximize Build Space & Swap
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo fallocate -l 4G /swapfile || true
+          sudo chmod 600 /swapfile || true
+          sudo mkswap /swapfile || true
+          sudo swapon /swapfile || true
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -24,8 +34,10 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Accept Pre-installed Android Licenses
+      - name: Configure Android SDK & NDK
         run: |
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "NDK_PATH=$ANDROID_HOME/ndk-bundle" >> $GITHUB_ENV
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
       - name: Extract Project ZIP
@@ -34,12 +46,12 @@ jobs:
           ROOT_DIR=$(dirname $(find . -name "package.json" | head -n 1))
           echo "PROJECT_DIR=$ROOT_DIR" >> $GITHUB_ENV
 
-      - name: Configure Package & Build Environment
+      - name: Configure Package & Build Settings
         run: |
           cd "$PROJECT_DIR"
           export CI=true
-          
-          # app.json me package name verify/inject
+
+          # app.json validation and fallback
           node -e '
             const fs = require("fs");
             if (fs.existsSync("app.json")) {
@@ -53,28 +65,48 @@ jobs:
           
           npm install --legacy-peer-deps --force
 
-      - name: Generate Android Project (Expo Prebuild)
+      - name: Run Expo Prebuild
         run: |
           cd "$PROJECT_DIR"
           export CI=true
           npx expo prebuild --platform android --clean --no-install
 
-      - name: Compile APK and AAB Bundle
+      - name: Optimize Gradle Properties
         run: |
           cd "$PROJECT_DIR/android"
+          mkdir -p ~/.gradle
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8
+          org.gradle.parallel=true
+          org.gradle.daemon=false
+          android.useAndroidX=true
+          android.enableJetifier=true
+          newArchEnabled=false
+          hermesEnabled=true
+          EOF
           chmod +x gradlew
+
+      - name: Compile APK
+        run: |
+          cd "$PROJECT_DIR/android"
           ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Compile AAB Bundle
+        run: |
+          cd "$PROJECT_DIR/android"
           ./gradlew bundleDebug --no-daemon --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: kaun-hai-sanatani-apk
-          path: "**/android/app/build/outputs/apk/debug/*.apk"
+          path: "**/android/app/build/outputs/apk/**/*.apk"
 
       - name: Upload AAB Bundle
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: kaun-hai-sanatani-bundle
-          path: "**/android/app/build/outputs/bundle/debug/*.aab"
+          path: "**/android/app/build/outputs/bundle/**/*.aab"
           
