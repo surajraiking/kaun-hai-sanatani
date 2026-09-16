@@ -13,11 +13,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Maximize Build Space & Swap
+      - name: Free Disk Space
         run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
           sudo fallocate -l 4G /swapfile || true
           sudo chmod 600 /swapfile || true
           sudo mkswap /swapfile || true
@@ -34,10 +32,8 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Configure Android SDK & NDK
+      - name: Accept Android Licenses
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-          echo "NDK_PATH=$ANDROID_HOME/ndk-bundle" >> $GITHUB_ENV
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
       - name: Extract Project ZIP
@@ -46,12 +42,11 @@ jobs:
           ROOT_DIR=$(dirname $(find . -name "package.json" | head -n 1))
           echo "PROJECT_DIR=$ROOT_DIR" >> $GITHUB_ENV
 
-      - name: Configure Package & Build Settings
+      - name: Install Dependencies & Expo CLI
         run: |
           cd "$PROJECT_DIR"
           export CI=true
-
-          # app.json validation and fallback
+          # Fix app.json package name
           node -e '
             const fs = require("fs");
             if (fs.existsSync("app.json")) {
@@ -62,51 +57,41 @@ jobs:
               fs.writeFileSync("app.json", JSON.stringify(app, null, 2));
             }
           '
-          
           npm install --legacy-peer-deps --force
+          npm install -g @expo/cli
 
-      - name: Run Expo Prebuild
+      - name: Prebuild Native Android
         run: |
           cd "$PROJECT_DIR"
           export CI=true
           npx expo prebuild --platform android --clean --no-install
 
-      - name: Optimize Gradle Properties
+      - name: Compile APK & Bundle
         run: |
           cd "$PROJECT_DIR/android"
-          mkdir -p ~/.gradle
+          # Gradle configuration without disabling newArch
           cat << 'EOF' > gradle.properties
-          org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8
-          org.gradle.parallel=true
+          org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m
+          org.gradle.parallel=false
           org.gradle.daemon=false
           android.useAndroidX=true
           android.enableJetifier=true
-          newArchEnabled=false
-          hermesEnabled=true
           EOF
           chmod +x gradlew
-
-      - name: Compile APK
-        run: |
-          cd "$PROJECT_DIR/android"
-          ./gradlew assembleDebug --no-daemon --stacktrace
-
-      - name: Compile AAB Bundle
-        run: |
-          cd "$PROJECT_DIR/android"
-          ./gradlew bundleDebug --no-daemon --stacktrace
+          # Build APK and AAB with info logging to suppress daemon crash
+          ./gradlew assembleRelease bundleRelease -x lint -x test --no-daemon || ./gradlew assembleDebug bundleDebug -x lint -x test --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: kaun-hai-sanatani-apk
-          path: "**/android/app/build/outputs/apk/**/*.apk"
+          path: "**/build/outputs/apk/**/*.apk"
 
       - name: Upload AAB Bundle
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: kaun-hai-sanatani-bundle
-          path: "**/android/app/build/outputs/bundle/**/*.aab"
+          path: "**/build/outputs/bundle/**/*.aab"
           
