@@ -13,13 +13,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Free Disk Space & Set Swap
-        run: |
-          sudo fallocate -l 4G /swapfile || true
-          sudo chmod 600 /swapfile || true
-          sudo mkswap /swapfile || true
-          sudo swapon /swapfile || true
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -31,8 +24,9 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Accept Pre-installed Android Licenses
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
       - name: Extract Project ZIP
         run: |
@@ -43,11 +37,9 @@ jobs:
       - name: Configure Package & Build Environment
         run: |
           cd "$PROJECT_DIR"
+          export CI=true
           
-          # CI non-interactive env setup
-          echo "CI=true" >> $GITHUB_ENV
-          
-          # Ensure android package name exists in app.json
+          # app.json me package name verify/inject
           node -e '
             const fs = require("fs");
             if (fs.existsSync("app.json")) {
@@ -59,38 +51,29 @@ jobs:
             }
           '
           
-          # Clean npm install
           npm install --legacy-peer-deps --force
 
-      - name: Generate Android Native Project
+      - name: Generate Android Project (Expo Prebuild)
         run: |
           cd "$PROJECT_DIR"
+          export CI=true
           npx expo prebuild --platform android --clean --no-install
-
-      - name: Configure Gradle Memory & Permissions
-        run: |
-          cd "$PROJECT_DIR/android"
-          mkdir -p ~/.gradle
-          echo "org.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=512m" >> gradle.properties
-          echo "org.gradle.daemon=false" >> gradle.properties
-          chmod +x gradlew
 
       - name: Compile APK and AAB Bundle
         run: |
           cd "$PROJECT_DIR/android"
+          chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
           ./gradlew bundleDebug --no-daemon --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: kaun-hai-sanatani-apk
           path: "**/android/app/build/outputs/apk/debug/*.apk"
 
       - name: Upload AAB Bundle
         uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: kaun-hai-sanatani-bundle
           path: "**/android/app/build/outputs/bundle/debug/*.aab"
