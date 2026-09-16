@@ -1,4 +1,4 @@
-name: Unpack and Build APK & Bundle
+name: Unpack, Auto-Detect and Build APK & Bundle
 
 on:
   push:
@@ -13,6 +13,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -22,23 +27,37 @@ jobs:
       - name: Unzip Archive
         run: |
           unzip -o "kaun-hai-sanatani-fixed.zip"
+          echo "=== UNZIPPED CONTENTS ==="
+          ls -la
 
-      - name: Make gradlew executable
+      - name: Build Android Project
         run: |
-          find . -name "gradlew" -exec chmod +x {} +
-
-      - name: Build Debug APK
-        run: |
-          GRADLEW_PATH=$(find . -name "gradlew" | head -n 1)
-          if [ -z "$GRADLEW_PATH" ]; then echo "gradlew not found!" && exit 1; fi
-          cd $(dirname "$GRADLEW_PATH")
-          ./gradlew assembleDebug --no-daemon --stacktrace
-
-      - name: Build App Bundle (AAB)
-        run: |
-          GRADLEW_PATH=$(find . -name "gradlew" | head -n 1)
-          cd $(dirname "$GRADLEW_PATH")
-          ./gradlew bundleDebug --no-daemon --stacktrace
+          # 1. Agar Native Android project hai jisme gradlew missing tha:
+          if find . -name "build.gradle*" | grep -q .; then
+            GRADLE_DIR=$(dirname $(find . -name "build.gradle*" | head -n 1))
+            cd "$GRADLE_DIR"
+            if [ ! -f "gradlew" ]; then
+              gradle wrapper
+              chmod +x gradlew
+            fi
+            ./gradlew assembleDebug --no-daemon
+            ./gradlew bundleDebug --no-daemon
+          
+          # 2. Agar Web App / Node / HTML app hai to Capacitor se Android APK banayein:
+          elif [ -f "package.json" ] || [ -f "index.html" ]; then
+            echo "Web app detected. Wrapping with Capacitor..."
+            npm init -y || true
+            npm install @capacitor/core @capacitor/cli @capacitor/android
+            npx cap init "Kaun Hai Sanatani" "com.sanatani.quiz" --web-dir .
+            npx cap add android
+            cd android
+            chmod +x gradlew
+            ./gradlew assembleDebug --no-daemon
+            ./gradlew bundleDebug --no-daemon
+          else
+            echo "Unknown project structure!"
+            exit 1
+          fi
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
