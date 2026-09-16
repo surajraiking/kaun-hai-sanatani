@@ -1,0 +1,54 @@
+name: Unpack and Build APK & Bundle
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Unzip Archive
+        run: |
+          unzip -o "kaun-hai-sanatani-fixed.zip"
+
+      - name: Make gradlew executable
+        run: |
+          find . -name "gradlew" -exec chmod +x {} +
+
+      - name: Build Debug APK
+        run: |
+          GRADLEW_PATH=$(find . -name "gradlew" | head -n 1)
+          if [ -z "$GRADLEW_PATH" ]; then echo "gradlew not found!" && exit 1; fi
+          cd $(dirname "$GRADLEW_PATH")
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Build App Bundle (AAB)
+        run: |
+          GRADLEW_PATH=$(find . -name "gradlew" | head -n 1)
+          cd $(dirname "$GRADLEW_PATH")
+          ./gradlew bundleDebug --no-daemon --stacktrace
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: "**/build/outputs/apk/**/*.apk"
+
+      - name: Upload AAB Bundle Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-bundle
+          path: "**/build/outputs/bundle/**/*.aab"
+          
