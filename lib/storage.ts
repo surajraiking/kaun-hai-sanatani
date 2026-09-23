@@ -52,30 +52,31 @@ function writeWebBackup(value: string) {
   }
 }
 
-function normalizeProgress(parsed: any): SavedProgress {
+function normalizeProgress(parsed: unknown): SavedProgress {
   if (!parsed || typeof parsed !== 'object') return DEFAULT_PROGRESS;
 
-  const usedQuestionIds = Array.isArray(parsed.usedQuestionIds)
-    ? parsed.usedQuestionIds.filter((x: unknown): x is string => typeof x === 'string')
+  const record = parsed as Partial<SavedProgress> & { generatedQuestions?: unknown };
+  const usedQuestionIds = Array.isArray(record.usedQuestionIds)
+    ? record.usedQuestionIds.filter((x: unknown): x is string => typeof x === 'string')
     : [];
-  const generatedQuestions = Array.isArray(parsed.generatedQuestions)
-    ? parsed.generatedQuestions
+  const generatedQuestions: Question[] = Array.isArray(record.generatedQuestions)
+    ? record.generatedQuestions.filter((q: unknown): q is Question => Boolean(q && typeof q === 'object'))
     : [];
 
   const knownUsedFingerprints = generatedQuestions
-    .filter((q: unknown) => q && typeof q === 'object' && usedQuestionIds.includes((q as Question).id))
-    .map((q) => questionFingerprint(q as Question));
+    .filter((q: Question) => usedQuestionIds.includes(q.id))
+    .map((q: Question) => questionFingerprint(q));
 
   const usedQuestionFingerprints = [
-    ...(Array.isArray(parsed.usedQuestionFingerprints)
-      ? parsed.usedQuestionFingerprints.filter((x: unknown): x is string => typeof x === 'string')
+    ...(Array.isArray(record.usedQuestionFingerprints)
+      ? record.usedQuestionFingerprints.filter((x: unknown): x is string => typeof x === 'string')
       : []),
     ...knownUsedFingerprints,
   ];
 
   return {
     ...DEFAULT_PROGRESS,
-    ...parsed,
+    ...record,
     usedQuestionIds: [...new Set(usedQuestionIds)],
     usedQuestionFingerprints: [...new Set(usedQuestionFingerprints)],
     generatedQuestions,
