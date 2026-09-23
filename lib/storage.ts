@@ -1,9 +1,21 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Question } from '@/data/questions';
-import { questionFingerprint } from '@/lib/gemini';
 
 const PROGRESS_KEY = '@kaun-hai-sanatani/progress';
 const WEB_BACKUP_KEY = 'kaun-hai-sanatani:progress:v2';
+
+function normalizeFingerprintText(text: string) {
+  return text
+    .toLowerCase()
+    .normalize('NFKC')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function storedQuestionFingerprint(question: Pick<Question, 'prompt'>) {
+  return normalizeFingerprintText(question.prompt);
+}
 
 export type SavedProgress = {
   bestScore: number;
@@ -65,7 +77,7 @@ function normalizeProgress(parsed: unknown): SavedProgress {
 
   const knownUsedFingerprints = generatedQuestions
     .filter((q: Question) => usedQuestionIds.includes(q.id))
-    .map((q: Question) => questionFingerprint(q));
+    .map((q: Question) => storedQuestionFingerprint(q));
 
   const usedQuestionFingerprints = [
     ...(Array.isArray(record.usedQuestionFingerprints)
@@ -122,7 +134,7 @@ export async function saveProgress(progress: SavedProgress) {
 
 export async function markQuestionUsed(question: Question) {
   const progress = await readProgress();
-  const fingerprint = questionFingerprint(question);
+  const fingerprint = storedQuestionFingerprint(question);
   const next: SavedProgress = {
     ...progress,
     usedQuestionIds: progress.usedQuestionIds.includes(question.id)
