@@ -13,8 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       EXPO_PUBLIC_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      EXPO_PUBLIC_GEMINI_MODEL: gemini-2.5-flash-lite
-    timeout-minutes: 45
+      EXPO_PUBLIC_GEMINI_MODEL: gemini-3.8-flash
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -39,6 +39,12 @@ jobs:
 
       - name: Align Expo SDK dependencies
         run: npx expo install --fix
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      - name: Expo doctor
+        run: npx expo-doctor
 
       - name: Generate Android project
         run: npx expo prebuild --platform android --clean --no-install
