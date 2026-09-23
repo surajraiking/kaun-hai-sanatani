@@ -32,7 +32,17 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
+          cache: none
+
+      - name: Verify Gemini secret is configured
+        shell: bash
+        run: |
+          if [ -z "$EXPO_PUBLIC_GEMINI_API_KEY" ]; then
+            echo "GEMINI_API_KEY GitHub repository secret is missing."
+            echo "Add it under Settings > Secrets and variables > Actions > New repository secret."
+            exit 1
+          fi
+          echo "Gemini API secret is configured."
 
       - name: Install JavaScript dependencies
         run: npm install --legacy-peer-deps --no-audit --no-fund
