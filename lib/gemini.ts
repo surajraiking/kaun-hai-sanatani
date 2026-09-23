@@ -1,231 +1,317 @@
-import type { Question, QuestionCategory } from '@/data/questions';
-import type { Language } from '@/data/translations';
+import { GoogleGenAI } from "@google/genai";
+import type { Question } from "../data/questions";
 
-const MODEL = process.env.EXPO_PUBLIC_GEMINI_MODEL || 'gemini-2.5-flash-lite';
 const API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+const MODEL = process.env.EXPO_PUBLIC_GEMINI_MODEL || "gemini-3.8-flash";
 
-function normalize(text: string) {
+if (!API_KEY) {
+  console.warn(
+    "[Gemini] EXPO_PUBLIC_GEMINI_API_KEY is missing. Online question generation is disabled."
+  );
+}
+
+const ai = API_KEY ? new GoogleGenAI({ apiKey: API_KEY }) : null;
+
+export type GeneratedQuestion = Question & {
+  source?: string;
+  sourceUrl?: string;
+};
+
+type GenerateQuestionsOptions = {
+  language?: "hi" | "en";
+  count?: number;
+  excludeIds?: string[];
+  excludeFingerprints?: string[];
+  previousQuestions?: Array<{
+    question: string;
+    answer?: string;
+  }>;
+};
+
+function cleanJson(text: string): string {
   return text
-    .toLowerCase()
-    .normalize('NFKC')
-    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
     .trim();
 }
 
-export function questionFingerprint(question: Pick<Question, 'prompt'>) {
-  return normalize(question.prompt);
+function fingerprint(question: {
+  question: string;
+  answer?: string;
+}): string {
+  return `${question.question}|${question.answer ?? ""}`
+    .toLowerCase()
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
+    .replace(/[^\p{L}\p{N} ]/gu, "")
+    .trim();
 }
 
-function tokens(text: string) {
-  return new Set(
-    normalize(text)
-      .split(' ')
-      .filter((word) => word.length > 2),
-  );
-}
+function normalizeQuestion(
+  raw: any,
+  language: "hi" | "en"
+): GeneratedQuestion | null {
+  if (!raw || typeof raw !== "object") return null;
 
-function similarity(a: string, b: string) {
-  const aa = tokens(a);
-  const bb = tokens(b);
-  if (!aa.size || !bb.size) return 0;
-  let intersection = 0;
-  aa.forEach((word) => {
-    if (bb.has(word)) intersection += 1;
-  });
-  const overlap = intersection / Math.max(aa.size, bb.size);
-  const containment = intersection / Math.min(aa.size, bb.size);
-  return Math.max(overlap, containment * 0.82);
-}
+  const question = String(
+    raw.question ?? raw.questionText ?? raw.q ?? ""
+  ).trim();
 
-export function questionIsDuplicate(question: Question, previous: Question[]) {
-  const fingerprint = questionFingerprint(question);
-  return previous.some((old) => {
-    if (questionFingerprint(old) === fingerprint) return true;
-    // 0.58 catches paraphrases such as "Who was the mother of Karna?"
-    // and "Karna's mother was who?" without requiring exact wording.
-    return similarity(question.prompt, old.prompt) >= 0.58;
-  });
-}
+  const answer = String(
+    raw.answer ?? raw.correctAnswer ?? raw.correct ?? ""
+  ).trim();
 
-function stableId(question: Question) {
-  const source = `${question.category}|${question.level}|${normalize(question.prompt)}`;
-  let hash = 2166136261;
-  for (let i = 0; i < source.length; i += 1) {
-    hash ^= source.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
+  const options = Array.isArray(raw.options)
+    ? raw.options.map((x: unknown) => String(x).trim()).filter(Boolean)
+    : [];
+
+  if (!question || !answer || options.length < 4) {
+    return null;
   }
-  return `gemini-${(hash >>> 0).toString(16)}`;
-}
 
-function validateQuestion(value: unknown): value is Question {
-  if (!value || typeof value !== 'object') return false;
-  const q = value as Partial<Question>;
-  const uniqueOptions = Array.isArray(q.options)
-    ? new Set(q.options.map((option) => normalize(String(option)))).size === 4
-    : false;
-  return (
-    typeof q.category === 'string' &&
-    ['Vedas', 'Itihasa', 'Puranas', 'Tattva', 'Darshana', 'Tirtha'].includes(q.category) &&
-    typeof q.level === 'number' &&
-    q.level >= 1 &&
-    q.level <= 5 &&
-    typeof q.prompt === 'string' &&
-    q.prompt.trim().length >= 20 &&
-    Array.isArray(q.options) &&
-    q.options.length === 4 &&
-    uniqueOptions &&
-    q.options.every((x) => typeof x === 'string' && x.trim()) &&
-    typeof q.answer === 'number' &&
-    q.answer >= 0 &&
-    q.answer <= 3 &&
-    Number.isInteger(q.answer) &&
-    typeof q.explanation === 'string' &&
-    q.explanation.trim().length >= 10
+  const cleanedOptions = [...new Set(options)];
+
+  if (cleanedOptions.length !== 4) {
+    return null;
+  }
+
+  const correctIndex = cleanedOptions.findIndex(
+    (option) =>
+      option.toLowerCase() === answer.toLowerCase()
   );
+
+  if (correctIndex < 0) {
+    return null;
+  }
+
+  return {
+    id:
+      typeof raw.id === "string" && raw.id.trim()
+        ? raw.id.trim()
+        : `ai-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    question,
+    options: cleanedOptions,
+    answer: cleanedOptions[correctIndex],
+    explanation: String(raw.explanation ?? "").trim(),
+    category: String(raw.category ?? "Sanatan Dharma").trim(),
+    difficulty: raw.difficulty ?? "medium",
+    language,
+  } as GeneratedQuestion;
 }
 
-async function geminiText(prompt: string, json = false, useGoogleSearch = false) {
-  if (!API_KEY) throw new Error('EXPO_PUBLIC_GEMINI_API_KEY is not configured.');
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 45000);
-  try {
-    const body: Record<string, unknown> = {
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.75,
-        ...(json ? { responseMimeType: 'application/json' } : {}),
-      },
-    };
-
-    // Gemini's Google Search grounding performs live web retrieval and gives
-    // the model source-backed context before it writes the question set.
-    if (useGoogleSearch) {
-      body.tools = [{ google_search: {} }];
-    }
-
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': API_KEY,
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      },
+async function generateBatch(
+  options: GenerateQuestionsOptions
+): Promise<GeneratedQuestion[]> {
+  if (!ai) {
+    throw new Error(
+      "Gemini API key missing. Add EXPO_PUBLIC_GEMINI_API_KEY to .env."
     );
-    if (!response.ok) {
-      const responseBody = await response.text().catch(() => '');
-      throw new Error(`Gemini HTTP ${response.status}: ${responseBody.slice(0, 300)}`);
-    }
-    const data = await response.json();
-    const text = data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text || '').join('') || '';
-    if (!text) throw new Error('Gemini returned no text.');
-    return text;
-  } finally {
-    clearTimeout(timeout);
   }
-}
 
-export async function generateOnlineQuestions(
-  previousQuestions: Question[],
-  language: Language,
-  count = 30,
-): Promise<Question[]> {
-  const previous = previousQuestions
-    .slice(-500)
-    .map((q) => `- ${q.prompt}`)
-    .join('\n');
+  const language = options.language ?? "hi";
+  const count = Math.min(Math.max(options.count ?? 5, 1), 10);
+
+  const excludedIds = new Set(options.excludeIds ?? []);
+  const excludedFingerprints = new Set(options.excludeFingerprints ?? []);
+
+  const previousText =
+    options.previousQuestions
+      ?.slice(-100)
+      .map(
+        (q, index) =>
+          `${index + 1}. ${q.question}${q.answer ? ` — ${q.answer}` : ""}`
+      )
+      .join("\n") || "NONE";
+
+  const languageInstruction =
+    language === "hi"
+      ? "पूरे प्रश्न, विकल्प, उत्तर और explanation शुद्ध, सरल और स्वाभाविक हिंदी में लिखो।"
+      : "Write the question, options, answer and explanation in clear English.";
 
   const prompt = `
-You are the verified question engine for a Sanatana Dharma knowledge quiz.
-Generate exactly ${count} COMPLETELY NEW multiple-choice questions.
-Language: ${language === 'hi' ? 'Hindi' : 'English'}.
-Difficulty distribution: exactly 6 questions at each level 1,2,3,4,5 when count is 30.
-For other counts, distribute levels as evenly as possible.
+You are generating factual Sanatan Dharma quiz questions.
 
-IMPORTANT — SOURCE AND ACCURACY:
-- Use Google Search grounding before writing the questions.
-- Prefer primary/classical or reputable reference material: Vedic/Upanishadic text repositories, established Indological references, official temple or government cultural sources, and reputable academic/reference sources.
-- Do not rely on a single low-quality blog, social-media post, SEO page, or unsourced claim when a stronger source is available.
-- If sources disagree on a traditional detail, do not manufacture certainty; choose a well-attested fact instead.
-- Do not create fake quotations, fake chapter/verse numbers, or invented scripture references.
+TASK:
+Generate exactly ${count} completely different multiple-choice questions.
 
-IMPORTANT — NEVER REPEAT:
-- Do not repeat, paraphrase, reverse, or trivially reword ANY previous question.
-- Treat questions asking the same underlying fact in a different sentence as duplicates.
-- Do not reuse a question merely by changing the options, language, or order.
-- Do not ask the same entity/fact from another wording if the knowledge tested is essentially identical.
+${languageInstruction}
 
-FORMAT:
-- Each question must have exactly 4 unique options and exactly one correct answer.
-- answer is the zero-based option index.
-- Keep explanations concise and factual.
-- category must be one of: Vedas, Itihasa, Puranas, Tattva, Darshana, Tirtha.
-- Return ONLY a JSON array. No markdown, no commentary.
+IMPORTANT:
+1. Questions must be factually defensible.
+2. Prefer primary/authoritative sources and established Hindu scriptures/traditional sources.
+3. Use Google Search grounding before deciding factual claims.
+4. Do NOT invent scripture references.
+5. Do NOT repeat any previous question.
+6. Do NOT create a superficial paraphrase of a previous question.
+7. The central fact tested must be different.
+8. Exactly 4 options.
+9. Exactly one correct answer.
+10. The "answer" field MUST exactly match one of the four options.
+11. Give a concise explanation.
+12. Avoid controversial claims unless they can be clearly sourced.
+13. Do not use current politics.
+14. Do not output markdown.
+15. Return ONLY valid JSON.
 
-Previous questions that are permanently unavailable:
-${previous || '- (none)'}
+PREVIOUS QUESTIONS:
+${previousText}
+
+PREVIOUS QUESTION IDs TO AVOID:
+${[...excludedIds].join(", ") || "NONE"}
+
+PREVIOUS FINGERPRINTS TO AVOID:
+${[...excludedFingerprints].slice(-300).join("\n") || "NONE"}
+
+JSON FORMAT:
+{
+  "questions": [
+    {
+      "question": "...",
+      "options": ["...", "...", "...", "..."],
+      "answer": "...",
+      "explanation": "...",
+      "category": "...",
+      "difficulty": "easy"
+    }
+  ]
+}
+
+Difficulty should be one of:
+easy
+medium
+hard
 `;
 
-  const text = await geminiText(prompt, true, true);
-  let parsed: unknown;
+  const response = await ai.models.generateContent({
+    model: MODEL,
+    contents: prompt,
+    config: {
+      thinkingConfig: {
+        thinkingLevel: "low",
+      },
+      tools: [
+        {
+          googleSearch: {},
+        },
+      ],
+    },
+  });
+
+  const text = response.text?.trim();
+
+  if (!text) {
+    throw new Error("Gemini returned an empty response.");
+  }
+
+  let parsed: any;
+
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(cleanJson(text));
   } catch {
-    const match = text.match(/\[[\s\S]*\]/);
-    if (!match) throw new Error('Gemini did not return valid JSON.');
-    parsed = JSON.parse(match[0]);
-  }
-  if (!Array.isArray(parsed)) throw new Error('Gemini response is not an array.');
-
-  const result: Question[] = [];
-  for (const raw of parsed) {
-    if (!validateQuestion(raw)) continue;
-    const q = raw as Question;
-    const normalized: Question = {
-      ...q,
-      category: q.category as QuestionCategory,
-      id: stableId(q),
-    };
-    if (
-      !result.some((x) => x.id === normalized.id) &&
-      !questionIsDuplicate(normalized, previousQuestions) &&
-      !questionIsDuplicate(normalized, result)
-    ) {
-      result.push(normalized);
-    }
+    throw new Error(
+      "Gemini returned invalid JSON. Please try generating again."
+    );
   }
 
-  const byLevel = new Map<number, Question[]>();
-  for (let level = 1; level <= 5; level += 1) {
-    byLevel.set(level, result.filter((q) => q.level === level));
+  const rawQuestions = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed.questions)
+      ? parsed.questions
+      : [];
+
+  const result: GeneratedQuestion[] = [];
+  const localFingerprints = new Set<string>();
+
+  for (const raw of rawQuestions) {
+    const question = normalizeQuestion(raw, language);
+
+    if (!question) continue;
+
+    const fp = fingerprint(question);
+
+    if (excludedIds.has(question.id)) continue;
+    if (excludedFingerprints.has(fp)) continue;
+    if (localFingerprints.has(fp)) continue;
+
+    localFingerprints.add(fp);
+    result.push(question);
   }
-  if ([1, 2, 3, 4, 5].some((level) => (byLevel.get(level)?.length || 0) < 3)) {
-    throw new Error('Google-grounded Gemini did not produce enough unique questions at every difficulty level.');
-  }
+
   return result;
 }
 
-export async function generateOnlineQuestion(round: number, previousQuestions: Question[], language: Language = 'en'): Promise<Question> {
-  const targetLevel = Math.min(5, Math.floor((round - 1) / 3) + 1);
-  const generated = await generateOnlineQuestions(previousQuestions, language, 10);
-  const match = generated.find((q) => q.level === targetLevel);
-  if (!match) throw new Error('No question at requested difficulty.');
-  return match;
+export async function generateUniqueQuestions(
+  options: GenerateQuestionsOptions = {}
+): Promise<GeneratedQuestion[]> {
+  const target = Math.min(Math.max(options.count ?? 15, 1), 15);
+
+  const collected: GeneratedQuestion[] = [];
+
+  const usedIds = new Set(options.excludeIds ?? []);
+  const usedFingerprints = new Set(options.excludeFingerprints ?? []);
+
+  // Up to 5 smaller requests.
+  // This is intentionally not one large request because smaller batches
+  // make duplicate filtering and retrying much more reliable.
+  for (let attempt = 0; attempt < 5 && collected.length < target; attempt++) {
+    const remaining = target - collected.length;
+
+    const batch = await generateBatch({
+      ...options,
+      count: Math.min(remaining + 2, 7),
+      excludeIds: [...usedIds],
+      excludeFingerprints: [...usedFingerprints],
+      previousQuestions: [
+        ...(options.previousQuestions ?? []),
+        ...collected.map((q) => ({
+          question: q.question,
+          answer: q.answer,
+        })),
+      ],
+    });
+
+    if (batch.length === 0) {
+      continue;
+    }
+
+    for (const question of batch) {
+      const fp = fingerprint(question);
+
+      if (usedIds.has(question.id)) continue;
+      if (usedFingerprints.has(fp)) continue;
+
+      usedIds.add(question.id);
+      usedFingerprints.add(fp);
+      collected.push(question);
+
+      if (collected.length >= target) break;
+    }
+  }
+
+  if (collected.length < target) {
+    throw new Error(
+      `Only ${collected.length} unique questions could be generated. Please try again.`
+    );
+  }
+
+  return collected;
 }
 
-export async function askMuniSalah(question: Question, selectedOptions: string[], language: Language = 'en') {
-  const prompt = `
-Give concise quiz guidance for this Sanatana Dharma question.
-Language: ${language === 'hi' ? 'Hindi' : 'English'}.
-Question: ${question.prompt}
-Options: ${question.options.join(' | ')}
-Selected: ${selectedOptions.join(' | ')}
-Correct option: ${question.options[question.answer]}
-Explain why the correct option is correct in 2-3 sentences. Do not invent citations.
-`;
-  return geminiText(prompt);
+// Backward-compatible function name.
+// If existing app code calls generateQuestions(), it will continue working.
+export async function generateQuestions(
+  count = 15,
+  language: "hi" | "en" = "hi",
+  excludeIds: string[] = [],
+  excludeFingerprints: string[] = [],
+  previousQuestions: Array<{ question: string; answer?: string }> = []
+) {
+  return generateUniqueQuestions({
+    count,
+    language,
+    excludeIds,
+    excludeFingerprints,
+    previousQuestions,
+  });
 }
