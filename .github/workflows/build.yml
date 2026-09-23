@@ -1,0 +1,90 @@
+name: Build Android APK and AAB
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    env:
+      EXPO_PUBLIC_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      EXPO_PUBLIC_GEMINI_MODEL: gemini-2.5-flash-lite
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          package-manager-cache: false
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Install JavaScript dependencies
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+
+      - name: Align Expo SDK dependencies
+        run: npx expo install --fix
+
+      - name: Generate Android project
+        run: npx expo prebuild --platform android --clean --no-install
+
+      - name: Fix Hermes Gradle property
+        working-directory: android
+        shell: bash
+        run: |
+          touch gradle.properties
+          if grep -q '^hermesEnabled=' gradle.properties; then
+            sed -i 's/^hermesEnabled=.*/hermesEnabled=true/' gradle.properties
+          else
+            printf '\nhermesEnabled=true\n' >> gradle.properties
+          fi
+          printf '\norg.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m\norg.gradle.daemon=false\norg.gradle.parallel=false\n' >> gradle.properties
+          echo '--- gradle.properties ---'
+          cat gradle.properties
+
+      - name: Build release APK
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Build release AAB
+        working-directory: android
+        run: ./gradlew bundleRelease --no-daemon --stacktrace
+
+      - name: Verify APK and AAB
+        shell: bash
+        run: |
+          test -s android/app/build/outputs/apk/release/app-release.apk
+          test -s android/app/build/outputs/bundle/release/app-release.aab
+          ls -lh android/app/build/outputs/apk/release/app-release.apk
+          ls -lh android/app/build/outputs/bundle/release/app-release.aab
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: kaun-hai-sanatani-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v6
+        with:
+          name: kaun-hai-sanatani-aab
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+          retention-days: 30

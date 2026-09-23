@@ -1,0 +1,18 @@
+node_modules/
+.expo/
+.env
+.env.*
+!.env.example
+android/.gradle/
+android/build/
+android/app/build/
+*.log
+.DS_Store
+*.keystore
+*.jks
+
+# Expo generated files
+expo-env.d.ts
+
+# Local Git recovery backup
+.git-broken-backup/
