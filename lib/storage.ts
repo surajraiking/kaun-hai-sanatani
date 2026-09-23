@@ -3,6 +3,7 @@ import type { Question } from '@/data/questions';
 import { questionFingerprint } from '@/lib/gemini';
 
 const PROGRESS_KEY = '@kaun-hai-sanatani/progress';
+const WEB_BACKUP_KEY = 'kaun-hai-sanatani:progress:v2';
 
 export type SavedProgress = {
   bestScore: number;
@@ -29,63 +30,106 @@ export const DEFAULT_PROGRESS: SavedProgress = {
   generatedQuestions: [],
 };
 
+function isWeb() {
+  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+}
+
+function readWebBackup() {
+  if (!isWeb()) return null;
+  try {
+    return window.localStorage.getItem(WEB_BACKUP_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeWebBackup(value: string) {
+  if (!isWeb()) return;
+  try {
+    window.localStorage.setItem(WEB_BACKUP_KEY, value);
+  } catch {
+    // AsyncStorage remains the primary persistence layer.
+  }
+}
+
+function normalizeProgress(parsed: any): SavedProgress {
+  if (!parsed || typeof parsed !== 'object') return DEFAULT_PROGRESS;
+
+  const usedQuestionIds = Array.isArray(parsed.usedQuestionIds)
+    ? parsed.usedQuestionIds.filter((x: unknown): x is string => typeof x === 'string')
+    : [];
+  const generatedQuestions = Array.isArray(parsed.generatedQuestions)
+    ? parsed.generatedQuestions
+    : [];
+
+  const knownUsedFingerprints = generatedQuestions
+    .filter((q: unknown) => q && typeof q === 'object' && usedQuestionIds.includes((q as Question).id))
+    .map((q) => questionFingerprint(q as Question));
+
+  const usedQuestionFingerprints = [
+    ...(Array.isArray(parsed.usedQuestionFingerprints)
+      ? parsed.usedQuestionFingerprints.filter((x: unknown): x is string => typeof x === 'string')
+      : []),
+    ...knownUsedFingerprints,
+  ];
+
+  return {
+    ...DEFAULT_PROGRESS,
+    ...parsed,
+    usedQuestionIds: [...new Set(usedQuestionIds)],
+    usedQuestionFingerprints: [...new Set(usedQuestionFingerprints)],
+    generatedQuestions,
+  };
+}
+
 export async function readProgress(): Promise<SavedProgress> {
   try {
-    const raw = await AsyncStorage.getItem(PROGRESS_KEY);
+    const asyncRaw = await AsyncStorage.getItem(PROGRESS_KEY);
+    const raw = asyncRaw || readWebBackup();
     if (!raw) return DEFAULT_PROGRESS;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return DEFAULT_PROGRESS;
-    const usedQuestionIds = Array.isArray(parsed.usedQuestionIds) ? parsed.usedQuestionIds.filter((x: unknown): x is string => typeof x === 'string') : [];
-    const generatedQuestions = Array.isArray(parsed.generatedQuestions) ? parsed.generatedQuestions : [];
-    const knownQuestions = [...generatedQuestions];
-    // The seed bank is imported lazily here to avoid making storage depend on UI state.
-    // Any generated question whose ID is already marked used contributes its fingerprint too.
-    const knownUsedFingerprints = knownQuestions
-      .filter((q: unknown) => q && typeof q === 'object' && usedQuestionIds.includes((q as Question).id))
-      .map((q) => questionFingerprint(q as Question));
-    const usedQuestionFingerprints = [
-      ...(Array.isArray(parsed.usedQuestionFingerprints) ? parsed.usedQuestionFingerprints.filter((x: unknown): x is string => typeof x === 'string') : []),
-      ...knownUsedFingerprints,
-    ];
-    return {
-      ...DEFAULT_PROGRESS,
-      ...parsed,
-      usedQuestionIds: [...new Set(usedQuestionIds)],
-      usedQuestionFingerprints: [...new Set(usedQuestionFingerprints)],
-      generatedQuestions,
-    };
+    return normalizeProgress(JSON.parse(raw));
   } catch {
-    return DEFAULT_PROGRESS;
+    try {
+      const backup = readWebBackup();
+      return backup ? normalizeProgress(JSON.parse(backup)) : DEFAULT_PROGRESS;
+    } catch {
+      return DEFAULT_PROGRESS;
+    }
   }
 }
 
 export async function saveProgress(progress: SavedProgress) {
+  const safe: SavedProgress = {
+    ...DEFAULT_PROGRESS,
+    ...progress,
+    usedQuestionIds: [...new Set(Array.isArray(progress.usedQuestionIds) ? progress.usedQuestionIds.filter(Boolean) : [])],
+    usedQuestionFingerprints: [...new Set(Array.isArray(progress.usedQuestionFingerprints) ? progress.usedQuestionFingerprints.filter(Boolean) : [])],
+    generatedQuestions: Array.isArray(progress.generatedQuestions) ? progress.generatedQuestions : [],
+  };
+
+  const serialized = JSON.stringify(safe);
+  writeWebBackup(serialized);
+
   try {
-    const safe: SavedProgress = {
-      ...DEFAULT_PROGRESS,
-      ...progress,
-      usedQuestionIds: [...new Set(Array.isArray(progress.usedQuestionIds) ? progress.usedQuestionIds.filter(Boolean) : [])],
-      usedQuestionFingerprints: [...new Set(Array.isArray(progress.usedQuestionFingerprints) ? progress.usedQuestionFingerprints.filter(Boolean) : [])],
-      generatedQuestions: Array.isArray(progress.generatedQuestions) ? progress.generatedQuestions : [],
-    };
-    await AsyncStorage.setItem(PROGRESS_KEY, JSON.stringify(safe));
+    await AsyncStorage.setItem(PROGRESS_KEY, serialized);
     return safe;
   } catch {
-    // Storage failure must never crash the quiz UI. The in-memory state remains usable.
-    return progress;
+    // Web backup has already been written; storage failure must never crash the quiz UI.
+    return safe;
   }
 }
 
 export async function markQuestionUsed(question: Question) {
   const progress = await readProgress();
+  const fingerprint = questionFingerprint(question);
   const next: SavedProgress = {
     ...progress,
     usedQuestionIds: progress.usedQuestionIds.includes(question.id)
       ? progress.usedQuestionIds
       : [...progress.usedQuestionIds, question.id],
-    usedQuestionFingerprints: progress.usedQuestionFingerprints.includes(questionFingerprint(question))
+    usedQuestionFingerprints: progress.usedQuestionFingerprints.includes(fingerprint)
       ? progress.usedQuestionFingerprints
-      : [...progress.usedQuestionFingerprints, questionFingerprint(question)],
+      : [...progress.usedQuestionFingerprints, fingerprint],
   };
   await saveProgress(next);
   return next;
