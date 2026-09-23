@@ -138,7 +138,7 @@ export async function markQuestionUsed(question: Question) {
 
 export async function cacheGeneratedQuestions(questions: Question[]) {
   const progress = await readProgress();
-  const existing = new Map(progress.generatedQuestions.map((q) => [q.id, q]));
+  const existing = new Map<string, Question>(progress.generatedQuestions.map((q: Question) => [q.id, q]));
   for (const question of questions) existing.set(question.id, question);
   const next = { ...progress, generatedQuestions: [...existing.values()] };
   await saveProgress(next);
