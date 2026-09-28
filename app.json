@@ -10,29 +10,14 @@
     "ios": {
       "supportsTablet": false
     },
-    "android": {
-      "package": "com.kaunhaisanatani.app",
-      "versionCode": 1,
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/images/icon.png",
-        "backgroundColor": "#111111"
-      }
-    },
+    "android": {},
     "web": {
       "favicon": "./assets/images/icon.png"
     },
-    "plugins": [
-      "expo-router"
-    ],
+    "plugins": ["expo-router"],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    },
-    "extra": {
-      "router": {},
-      "eas": {
-        "projectId": "d868e9f2-eea7-474d-b3ba-207f96c3838a"
-      }
     }
   }
 }

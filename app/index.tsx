@@ -15,7 +15,7 @@ import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useColors } from '@/hooks/useColors';
 import { QUESTION_BANK, type Question } from '@/data/questions';
-import { askMuniSalah, generateOnlineQuestions, questionFingerprint, questionIsDuplicate } from '@/lib/gemini';
+import { askMuniSalah, generateOnlineQuestion } from '@/lib/gemini';
 import { playTone } from '@/lib/sounds';
 import { DEFAULT_PROGRESS, readProgress, saveProgress, type SavedProgress } from '@/lib/storage';
 import { UI } from '@/data/copy';
@@ -39,38 +39,6 @@ function timerForPada(pada: number) {
   if (pada <= 5) return 30;
   if (pada <= 10) return 45;
   return null;
-}
-
-function difficultyForPada(pada: number) {
-  return Math.min(5, Math.floor((pada - 1) / 3) + 1);
-}
-
-function pickRoundQuestions(saved: SavedProgress) {
-  const usedIds = new Set(saved.usedQuestionIds);
-  const usedFingerprints = new Set(saved.usedQuestionFingerprints);
-  const pool = [...saved.generatedQuestions, ...QUESTION_BANK].filter((q): q is Question => Boolean(q && typeof q.id === 'string' && typeof q.prompt === 'string' && Array.isArray(q.options) && q.options.length === 4));
-  const usedKnownQuestions = pool.filter((q, index, all) =>
-    all.findIndex((x) => x.id === q.id) === index &&
-    (usedIds.has(q.id) || usedFingerprints.has(questionFingerprint(q)))
-  );
-  const unique = new Map<string, Question>();
-  for (const q of pool) {
-    const fp = questionFingerprint(q);
-    if (usedIds.has(q.id) || usedFingerprints.has(fp) || questionIsDuplicate(q, usedKnownQuestions)) continue;
-    if ([...unique.values()].some((existing) => questionIsDuplicate(q, [existing]))) continue;
-    unique.set(q.id, q);
-  }
-
-  const selected: Question[] = [];
-  for (let level = 1; level <= 5; level += 1) {
-    const candidates = [...unique.values()]
-      .filter((q) => q.level === level)
-      .sort(() => Math.random() - 0.5)
-      .slice(0, 3);
-    selected.push(...candidates);
-    for (const q of candidates) unique.delete(q.id);
-  }
-  return selected;
 }
 
 function getNextQuestion(usedIds: string[], pada: number): Question {
@@ -149,7 +117,6 @@ function App() {
   const [pada, setPada] = useState(1);
   const [score, setScore] = useState(0);
   const [question, setQuestion] = useState<Question | null>(null);
-  const [roundQuestions, setRoundQuestions] = useState<Question[]>([]);
   const [usedIds, setUsedIds] = useState<string[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [resultState, setResultState] = useState<ResultState>('idle');
@@ -161,11 +128,10 @@ function App() {
   const [seconds, setSeconds] = useState<number | null>(null);
   const [showMilestone, setShowMilestone] = useState(false);
   const [showExit, setShowExit] = useState(false);
-  const [onlineMode, setOnlineMode] = useState(Boolean(process.env.EXPO_PUBLIC_GEMINI_API_KEY));
+  const [onlineMode, setOnlineMode] = useState(false);
   const [roundLoading, setRoundLoading] = useState(false);
   const [dailyMode, setDailyMode] = useState(false);
   const pulse = useRef(new Animated.Value(0.92)).current;
-  const startingGameRef = useRef(false);
 
   useEffect(() => {
     void readProgress().then((saved) => {
@@ -212,111 +178,31 @@ function App() {
   };
 
   const beginGame = async (isDaily = false) => {
-    if (startingGameRef.current) return;
-    startingGameRef.current = true;
     setRoundLoading(true);
     setDailyMode(isDaily);
+    let next: Question;
     try {
-      let saved = await readProgress();
-
-      if (isDaily) {
-        let daily = pickRoundQuestions(saved)[0];
-        if (!daily && onlineMode) {
-          try {
-            const fresh = await generateOnlineQuestions([...saved.generatedQuestions, ...QUESTION_BANK], language, 10);
-            daily = fresh[0];
-            saved = { ...saved, generatedQuestions: [...saved.generatedQuestions, ...fresh] };
-          } catch {
-            // Keep the normal fallback below.
-          }
-        }
-        if (!daily) throw new Error('No unused daily question is available. Turn on Online Mode.');
-        saved = {
-          ...saved,
-          usedQuestionIds: [...new Set([...saved.usedQuestionIds, daily.id])],
-          usedQuestionFingerprints: [...new Set([...saved.usedQuestionFingerprints, questionFingerprint(daily)])],
-        };
-        await saveProgress(saved);
-        setProgress(saved);
-        const localizedDaily = localizeQuestion(daily, language);
-        setPada(1);
-        setScore(0);
-        setRoundQuestions([localizedDaily]);
-        setUsedIds([daily.id]);
-        setQuestion(localizedDaily);
-      } else {
-        let selectedQuestions = pickRoundQuestions(saved);
-
-        if (selectedQuestions.length < TOTAL_PADAS && onlineMode) {
-          const previous = [...saved.generatedQuestions, ...QUESTION_BANK];
-          try {
-            const fresh = await generateOnlineQuestions(previous, language, 30);
-            const generatedMap = new Map(saved.generatedQuestions.map((q) => [q.id, q]));
-            for (const q of fresh) generatedMap.set(q.id, q);
-            saved = {
-              ...saved,
-              generatedQuestions: [...generatedMap.values()],
-            };
-            await saveProgress(saved);
-            selectedQuestions = pickRoundQuestions(saved);
-          } catch {
-            // Offline/local bank is used as a safe fallback.
-          }
-        }
-
-        if (selectedQuestions.length < TOTAL_PADAS) {
-          const available = [...saved.generatedQuestions, ...QUESTION_BANK]
-            .filter((q, i, arr) => arr.findIndex((x) => x.id === q.id) === i)
-            .filter((q) => !saved.usedQuestionIds.includes(q.id))
-            .filter((q) => !saved.usedQuestionFingerprints.includes(questionFingerprint(q)))
-            .filter((q) => !questionIsDuplicate(q, [...saved.generatedQuestions, ...QUESTION_BANK].filter((old) =>
-              saved.usedQuestionIds.includes(old.id) || saved.usedQuestionFingerprints.includes(questionFingerprint(old))
-            )))
-            .sort(() => Math.random() - 0.5);
-          for (const q of available) {
-            if (selectedQuestions.length >= TOTAL_PADAS) break;
-            if (!selectedQuestions.some((x) => x.id === q.id)) selectedQuestions.push(q);
-          }
-        }
-
-        if (selectedQuestions.length < TOTAL_PADAS) {
-          throw new Error('Not enough unused questions. Turn on Online Mode so Gemini can create more.');
-        }
-
-        const usedIdsNext = [...saved.usedQuestionIds, ...selectedQuestions.map((q) => q.id)];
-        const usedFingerprintsNext = [
-          ...saved.usedQuestionFingerprints,
-          ...selectedQuestions.map((q) => questionFingerprint(q)),
-        ];
-        saved = {
-          ...saved,
-          usedQuestionIds: [...new Set(usedIdsNext)],
-          usedQuestionFingerprints: [...new Set(usedFingerprintsNext)],
-        };
-        await saveProgress(saved);
-        setProgress(saved);
-
-        setRoundQuestions(selectedQuestions.map((q) => localizeQuestion(q, language)));
-        setUsedIds(selectedQuestions.map((q) => q.id));
-        setPada(1);
-        setScore(0);
-        setQuestion(localizeQuestion(selectedQuestions[0], language));
-      }
-
-      setSelected(null);
-      setResultState('idle');
-      setDisabledOptions([]);
-      setUsedLifelines([]);
-      setAudience(null);
-      setGuruMessage(null);
-      setSeconds(timerForPada(1));
-      setScreen('game');
-    } catch (error) {
-      setGuruMessage(error instanceof Error ? error.message : 'Question generation failed.');
-    } finally {
-      setRoundLoading(false);
-      startingGameRef.current = false;
+      next = isDaily
+        ? localizeQuestion(getDailyQuestion(), language)
+        : onlineMode
+          ? await generateOnlineQuestion(1, [], language)
+          : localizeQuestion(getNextQuestion([], 1), language);
+    } catch {
+      next = localizeQuestion(getNextQuestion([], 1), language);
     }
+    setPada(1);
+    setScore(0);
+    setUsedIds([next.id]);
+    setQuestion(next);
+    setSelected(null);
+    setResultState('idle');
+    setDisabledOptions([]);
+    setUsedLifelines([]);
+    setAudience(null);
+    setGuruMessage(null);
+    setSeconds(timerForPada(1));
+    setScreen('game');
+    setRoundLoading(false);
   };
 
   const finishGame = async (finalScore: number, finalPada: number) => {
@@ -337,9 +223,7 @@ function App() {
       dailyStreak: nextDailyStreak,
       lastDailyDate: completedDaily ? today : progress.lastDailyDate,
       dailyCompletedDate: completedDaily ? today : progress.dailyCompletedDate,
-      preferredLanguage: language,  usedQuestionIds: progress.usedQuestionIds,
-  usedQuestionFingerprints: progress.usedQuestionFingerprints,
-  generatedQuestions: progress.generatedQuestions,
+      preferredLanguage: language,
     };
     setProgress(nextProgress);
     await saveProgress(nextProgress);
@@ -351,23 +235,24 @@ function App() {
       await finishGame(score, 1);
       return;
     }
-
-    if (resultState === 'correct' && pada < TOTAL_PADAS) {
+    if (resultState === 'correct' && pada < TOTAL_PADAS && question) {
       const nextPada = pada + 1;
       if (SAFETY_NETS.has(pada)) {
         setShowMilestone(true);
         playTone('milestone');
         setTimeout(() => setShowMilestone(false), 1600);
       }
-
-      const nextQuestion = roundQuestions[nextPada - 1];
-      if (!nextQuestion) {
-        await finishGame(score, pada);
-        return;
+      let nextQuestion: Question;
+      try {
+        nextQuestion = onlineMode
+          ? await generateOnlineQuestion(nextPada, usedIds, language)
+          : localizeQuestion(getNextQuestion(usedIds, nextPada), language);
+      } catch {
+        nextQuestion = localizeQuestion(getNextQuestion(usedIds, nextPada), language);
       }
-
       setPada(nextPada);
-      setQuestion(localizeQuestion(nextQuestion, language));
+      setQuestion(nextQuestion);
+      setUsedIds((ids) => [...ids, nextQuestion.id]);
       setSelected(null);
       setResultState('idle');
       setDisabledOptions([]);
@@ -376,7 +261,6 @@ function App() {
       setSeconds(timerForPada(nextPada));
       return;
     }
-
     await finishGame(score, pada);
   };
 
@@ -407,51 +291,22 @@ function App() {
       setAudience(poll);
     }
     if (lifeline === 'parivartan') {
+      let nextQuestion: Question;
       try {
-        const saved = await readProgress();
-        let replacement: Question | undefined;
-
-        const localCandidates = [...saved.generatedQuestions, ...QUESTION_BANK]
-          .filter((q) => q.level === difficultyForPada(pada))
-          .filter((q) => !saved.usedQuestionIds.includes(q.id))
-          .filter((q) => !saved.usedQuestionFingerprints.includes(questionFingerprint(q)))
-          .sort(() => Math.random() - 0.5);
-        replacement = localCandidates[0];
-
-        if (!replacement && onlineMode) {
-          const fresh = await generateOnlineQuestions(
-            [...saved.generatedQuestions, ...QUESTION_BANK],
-            language,
-            10,
-          );
-          replacement = fresh.find((q) => q.level === difficultyForPada(pada));
-          if (replacement) {
-            saved.generatedQuestions = [...saved.generatedQuestions, replacement];
-          }
-        }
-
-        if (!replacement) throw new Error('No unused replacement question is available.');
-
-        const nextSaved = {
-          ...saved,
-          usedQuestionIds: [...new Set([...saved.usedQuestionIds, replacement.id])],
-          usedQuestionFingerprints: [...new Set([...saved.usedQuestionFingerprints, questionFingerprint(replacement)])],
-        };
-        await saveProgress(nextSaved);
-        setProgress(nextSaved);
-
-        setQuestion(localizeQuestion(replacement, language));
-        setRoundQuestions((items) => items.map((item, index) => index === pada - 1 ? replacement! : item));
-        setUsedIds((ids) => [...ids, replacement!.id]);
-        setSelected(null);
-        setResultState('idle');
-        setDisabledOptions([]);
-        setAudience(null);
-        setGuruMessage(null);
-        setSeconds(timerForPada(pada));
-      } catch (error) {
-        setGuruMessage(error instanceof Error ? error.message : 'No unused replacement question is available.');
+        nextQuestion = onlineMode
+          ? await generateOnlineQuestion(pada, usedIds, language)
+          : localizeQuestion(getNextQuestion(usedIds, pada), language);
+      } catch {
+        nextQuestion = localizeQuestion(getNextQuestion(usedIds, pada), language);
       }
+      setQuestion(nextQuestion);
+      setUsedIds((ids) => [...ids, nextQuestion.id]);
+      setSelected(null);
+      setResultState('idle');
+      setDisabledOptions([]);
+      setAudience(null);
+      setGuruMessage(null);
+      setSeconds(timerForPada(pada));
     }
     if (lifeline === 'muni') {
       setGuruLoading(true);

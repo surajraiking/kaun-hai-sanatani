@@ -1,0 +1,24 @@
+kind = "mobile"
+previewPath = "/kaun-hai-sanatani/"
+title = "Kaun Hai Sanatani?"
+description = "A polished Sanatan Dharma quiz game with progressive pada levels, original lifelines, offline question play, Punya Mudras rewards, and an optional Gemini-powered guru hint mode."
+version = "1.0.0"
+id = "artifacts/kaun-hai-sanatani"
+router = "expo-domain"
+
+[[services]]
+name = "expo"
+ensurePreviewReachable = "/status"
+paths = [ "/kaun-hai-sanatani/" ]
+localPort = 20252
+
+[services.development]
+run = "pnpm --filter @workspace/kaun-hai-sanatani run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/kaun-hai-sanatani", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/kaun-hai-sanatani", "run", "serve" ]
+
+[services.env]
+PORT = "20252"
+BASE_PATH = "/kaun-hai-sanatani/"

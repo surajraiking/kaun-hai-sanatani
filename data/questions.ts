@@ -379,7 +379,31 @@ const SEED_QUESTIONS: Question[] = [
   },
 ];
 
-export const QUESTION_BANK: Question[] = SEED_QUESTIONS;
+const REVIEW_FRAMES = [
+  'In a focused revision round, identify the correct answer:',
+  'A learner asks for the most precise traditional answer:',
+  'At the sabha of knowledge, which answer is correct?',
+  'For this pada, recall the teaching and choose carefully:',
+  'Which option best matches the scriptural tradition?',
+  'A scholar presents this question for contemplation:',
+  'Choose the answer that preserves the classical context:',
+  'In a quiet study of Sanatana Dharma, answer this:',
+  'Which response is most faithful to the source tradition?',
+  'During svadhyaya, select the answer that is traditionally recognized:',
+  'The acharya asks you to distinguish the precise teaching:',
+  'Which choice best reflects the dharmic context of this question:',
+  'Pause, reflect, and choose the answer grounded in the source:',
+  'For a careful learner of the shastras, which option is right:',
+  'Let viveka guide your response to this knowledge question:',
+];
+
+export const QUESTION_BANK: Question[] = SEED_QUESTIONS.flatMap((question) =>
+  REVIEW_FRAMES.map((frame, index) => ({
+    ...question,
+    id: `${question.id}-r${index + 1}`,
+    prompt: `${frame} ${question.prompt}`,
+  })),
+);
 
 export const CATEGORIES: QuestionCategory[] = [
   'Vedas',
@@ -394,7 +418,10 @@ export function getQuestionsForRound(round: number, usedIds: string[] = []): Que
   const used = new Set(usedIds);
   const targetLevel = Math.min(5, Math.floor((round - 1) / 3) + 1);
   const candidates = QUESTION_BANK.filter(
-    (question) => question.level === targetLevel && !used.has(question.id),
+    (question) => question.level <= targetLevel && !used.has(question.id),
   );
-  return [...candidates].sort(() => Math.random() - 0.5).slice(0, 1);
+  const shuffled = [...candidates].sort(() => Math.random() - 0.5);
+  const selected = shuffled.slice(0, 1);
+  if (selected.length > 0) return selected;
+  return QUESTION_BANK.filter((question) => !used.has(question.id)).slice(0, 1);
 }
